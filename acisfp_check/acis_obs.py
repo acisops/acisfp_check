@@ -1,8 +1,6 @@
-# ----------------------------------------------------------------
-#
-# who_in_fp
-#
-# ----------------------------------------------------------------
+import numpy as np
+
+
 def who_in_fp(simpos=80655):
     """
     Returns a string telling you which instrument is in
@@ -40,11 +38,39 @@ def who_in_fp(simpos=80655):
     return is_in_the_fp
 
 
-# ---------------------------------------------------------------------
-#
-# find_obsid_intervals
-#
-# ---------------------------------------------------------------------
+def fetch_ocat_data(obsid_list):
+    import requests
+    from astropy.io import ascii
+    urlbase = "https://cda.harvard.edu/srservices/ocatDetails.do?format=text"
+    obsid_list = ",".join([str(obsid) for obsid in obsid_list])
+    params = {"obsid": obsid_list}
+    # First fetch the information from the obsid itself
+    resp = requests.get(urlbase, params=params)
+    tab = ascii.read(resp.text, header_start=0, data_start=2)
+    tab.sort("OBSID")
+    ccd_count = np.zeros(tab["S3"].size, dtype='int')
+    for a, r in zip(["I", "S"], [range(4), range(6)]):
+        for i in r:
+            ccd = np.ma.filled(tab[f"{a}{i}"].data)
+            ccd_count += (ccd == "Y").astype('int')
+            ccd_count += np.char.startswith(ccd, "O").astype('int')
+    ccd_count -= tab["DROPPED_CHIP_CNT"].data.astype('int')
+    # Now we have to find all of the obsids in the sequence and then
+    # compute the complete exposure for the sequence
+    params = {"seqNum": tab["SEQ_NUM"].data.astype("int")}
+    resp = requests.get(urlbase, params=params)
+    tab_seq = ascii.read(resp.text, header_start=0, data_start=2)
+    app_exp = 0.0
+    for row in tab_seq:
+        app_exp += np.float64(row["APP_EXP"])
+    app_exp *= 1000.0
+    num_counts = tab["EST_CNT_RATE"].data.astype("float64")*app_exp
+    return {"obsid": tab["OBSID"].data.astype("int"),
+            "grating": tab["GRAT"].data,
+            "ccd_count": ccd_count,
+            "S3": np.ma.filled(tab["S3"].data),
+            "num_counts": num_counts}
+
 
 def find_obsid_intervals(cmd_states):
     """
@@ -147,14 +173,20 @@ def find_obsid_intervals(cmd_states):
 
     # End of LOOP for eachstate in cmd_states:
 
+    # sort based on obsid
+    obsid_interval_list.sort(key=lambda x: x["obsid"])
+    # Now we add the stuff we get from ocat_data
+    obsids = [e["obsid"] for e in obsid_interval_list]
+    ocat_data = fetch_ocat_data(obsids)
+    ocat_keys = list(ocat_data.keys())
+    ocat_keys.remove("obsid")
+
+    for i in range(len(obsids)):
+        for key in ocat_keys:
+            obsid_interval_list[i][key] = ocat_data[key][i]
+
     return obsid_interval_list
 
-
-# --------------------------------------------------------------------------
-#
-#   hrc_science_obs_filter - filter *OUT* any HRC science observations
-#
-# --------------------------------------------------------------------------
 
 def hrc_science_obs_filter(obsidinterval_list):
     """
@@ -171,17 +203,11 @@ def hrc_science_obs_filter(obsidinterval_list):
     return acis_and_ecs_only
 
 
-# --------------------------------------------------------------------------
-#
-#   ecs_only_filter
-#
-# --------------------------------------------------------------------------
-
 def ecs_only_filter(obsidinterval_list):
     """
-    This method will filter out any science observation from the
-    input obsid interval list. It keeps any observation that has an
-    obsid of 50,000 or greater
+    This method will filter and return cold ECS observations
+    in the science orbit. It keeps any observation that has an
+    obsid of 60,000 or greater with HRC-S in the focal plane. 
     """
     ecs_only = []
     for eachobservation in obsidinterval_list:
@@ -191,19 +217,29 @@ def ecs_only_filter(obsidinterval_list):
     return ecs_only
 
 
-# ----------------------------------------------------------------------
-#
-#  get_all_specific_instrument
-#
-# ---------------------------------------------------------------------
+def acis_filter(obsidinterval_list):
+    """
+    This method will filter between the different types of 
+    ACIS observations: ACIS-I, ACIS-S, and "hot" ACIS-S.
+    """
+    acis_hot = []
+    acis_s = []
+    acis_i = []
 
-def get_all_specific_instrument(observations, instrument):
-    """
-    Given a list  of obsid intervals extracted by this class
-    class, return the list all those obsids with the specified instrument
-    """
-    same_inst = []
-    for eachobs in observations:
-        if eachobs["instrument"] == instrument:
-            same_inst.append(eachobs)
-    return same_inst
+    for eachobs in obsidinterval_list:
+        if eachobs['obsid'] == 23645:
+            print(eachobs)
+        hetg = eachobs["grating"] == "HETG"
+        s3_only = eachobs["S3"] == "Y" and eachobs["ccd_count"] == 1
+        if hetg or (eachobs["num_counts"] < 300.0 and s3_only):
+            acis_hot.append(eachobs) 
+        else:
+            if eachobs["instrument"] == "ACIS-S":
+                acis_s.append(eachobs)
+            elif eachobs["instrument"] == "ACIS-I":
+                acis_i.append(eachobs)
+            else:
+                raise RuntimeError(f"Cannot determine what kind of thermal "
+                                   f"limit {eachobs['obsid']} should have!")
+    return acis_i, acis_s, acis_hot
+
