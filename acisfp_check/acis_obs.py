@@ -39,6 +39,20 @@ def who_in_fp(simpos=80655):
 
 
 def fetch_ocat_data(obsid_list):
+    """
+    Take a list of obsids and return the following data from
+    the obscat for each: grating status, CCD count, if S3 is on,
+    and the number of expected counts
+
+    Parameters
+    ----------
+    obsid_list : list of ints
+        The obsids to get the obscat data from.
+
+    Returns
+    -------
+    A dict of NumPy arrays of the above properties.
+    """
     import requests
     from astropy.io import ascii
     urlbase = "https://cda.harvard.edu/srservices/ocatDetails.do?format=text"
@@ -48,6 +62,9 @@ def fetch_ocat_data(obsid_list):
     resp = requests.get(urlbase, params=params)
     tab = ascii.read(resp.text, header_start=0, data_start=2)
     tab.sort("OBSID")
+    # We figure out the CCD count from the table by finding out
+    # which ccds were on or optional, and then subtracting off
+    # the dropped chip count
     ccd_count = np.zeros(tab["S3"].size, dtype='int')
     for a, r in zip(["I", "S"], [range(4), range(6)]):
         for i in r:
@@ -55,21 +72,25 @@ def fetch_ocat_data(obsid_list):
             ccd_count += (ccd == "Y").astype('int')
             ccd_count += np.char.startswith(ccd, "O").astype('int')
     ccd_count -= tab["DROPPED_CHIP_CNT"].data.astype('int')
-    # Now we have to find all of the obsids in the sequence and then
-    # compute the complete exposure for the sequence
-    params = {"seqNum": tab["SEQ_NUM"].data.astype("int")}
+    # Now we have to find all of the obsids in each sequence and then
+    # compute the complete exposure for each sequence
+    seq_nums = list(tab["SEQ_NUM"].data.astype("int"))
+    obsids = tab["OBSID"].data.astype("int")
+    cnt_rate = tab["EST_CNT_RATE"].data.astype("float64")
+    seq_num_list = ",".join([str(seq_num) for seq_num in seq_nums])
+    params = {"seqNum": seq_num_list}
     resp = requests.get(urlbase, params=params)
     tab_seq = ascii.read(resp.text, header_start=0, data_start=2)
-    app_exp = 0.0
+    app_exp = np.zeros_like(cnt_rate)
     for row in tab_seq:
-        app_exp += np.float64(row["APP_EXP"])
+        i = seq_nums.index(int(row["SEQ_NUM"]))
+        app_exp[i] += np.float64(row["APP_EXP"])
     app_exp *= 1000.0
-    num_counts = tab["EST_CNT_RATE"].data.astype("float64")*app_exp
-    return {"obsid": tab["OBSID"].data.astype("int"),
+    return {"obsid": np.array(obsids),
             "grating": tab["GRAT"].data,
             "ccd_count": ccd_count,
             "S3": np.ma.filled(tab["S3"].data),
-            "num_counts": num_counts}
+            "num_counts": cnt_rate*app_exp}
 
 
 def find_obsid_intervals(cmd_states):
@@ -127,7 +148,7 @@ def find_obsid_intervals(cmd_states):
     for eachstate in cmd_states:
 
         # Make sure we skip maneuver obsids explicitly
-        if 50000 > eachstate['obsid'] >= 38001:
+        if 60000 > eachstate['obsid'] >= 38001:
             continue
 
         pow_cmd = eachstate['power_cmd']
@@ -198,7 +219,7 @@ def hrc_science_obs_filter(obsidinterval_list):
     acis_and_ecs_only = []
     for eachobservation in obsidinterval_list:
         if eachobservation["instrument"].startswith("ACIS-") or \
-                eachobservation["obsid"] >= 50000:
+                eachobservation["obsid"] >= 60000:
             acis_and_ecs_only.append(eachobservation)
     return acis_and_ecs_only
 
@@ -227,8 +248,6 @@ def acis_filter(obsidinterval_list):
     acis_i = []
 
     for eachobs in obsidinterval_list:
-        if eachobs['obsid'] == 23645:
-            print(eachobs)
         hetg = eachobs["grating"] == "HETG"
         s3_only = eachobs["S3"] == "Y" and eachobs["ccd_count"] == 1
         if hetg or (eachobs["num_counts"] < 300.0 and s3_only):
