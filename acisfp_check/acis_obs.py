@@ -1,4 +1,5 @@
 import numpy as np
+from cxotime import CxoTime
 
 
 def who_in_fp(simpos=80655):
@@ -61,7 +62,8 @@ def fetch_ocat_data(obsid_list):
     # First fetch the information from the obsid itself
     resp = requests.get(urlbase, params=params)
     tab = ascii.read(resp.text, header_start=0, data_start=2)
-    tab.sort("OBSID")
+    tab["TSTART"] = CxoTime(tab["START_DATE"].data).secs
+    tab.sort("TSTART")
     # We figure out the CCD count from the table by finding out
     # which ccds were on or optional, and then subtracting off
     # the dropped chip count
@@ -195,7 +197,7 @@ def find_obsid_intervals(cmd_states):
     # End of LOOP for eachstate in cmd_states:
 
     # sort based on obsid
-    obsid_interval_list.sort(key=lambda x: x["obsid"])
+    obsid_interval_list.sort(key=lambda x: x["tstart"])
     # Now we add the stuff we get from ocat_data
     obsids = [e["obsid"] for e in obsid_interval_list]
     ocat_data = fetch_ocat_data(obsids)
