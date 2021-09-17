@@ -36,8 +36,7 @@ from astropy.table import Table
 # and attribute support routines.
 #
 from .acis_obs import find_obsid_intervals, \
-    hrc_science_obs_filter, ecs_only_filter, \
-    acis_filter
+    hrc_science_obs_filter, acis_filter
 
 model_path = os.path.abspath(os.path.dirname(__file__))
 
@@ -311,9 +310,8 @@ class ACISFPCheck(ACISThermalCheck):
         #   Create subsets of all the observations
         # ------------------------------------------------------
         # Now divide out observations by ACIS-S and ACIS-I
-        ACIS_I_obs, ACIS_S_obs, ACIS_hot_obs = \
+        ACIS_I_obs, ACIS_S_obs, ACIS_hot_obs, sci_ecs_obs = \
             acis_filter(self.acis_and_ecs_obs)
-        sci_ecs_obs = ecs_only_filter(self.acis_and_ecs_obs)
 
         temp = temps[self.name]
 

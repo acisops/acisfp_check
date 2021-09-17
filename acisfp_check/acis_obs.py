@@ -226,28 +226,16 @@ def hrc_science_obs_filter(obsidinterval_list):
     return acis_and_ecs_only
 
 
-def ecs_only_filter(obsidinterval_list):
-    """
-    This method will filter and return cold ECS observations
-    in the science orbit. It keeps any observation that has an
-    obsid of 60,000 or greater with HRC-S in the focal plane. 
-    """
-    ecs_only = []
-    for eachobservation in obsidinterval_list:
-        if eachobservation["obsid"] >= 60000 and \
-                eachobservation["instrument"] == "HRC-S":
-            ecs_only.append(eachobservation)
-    return ecs_only
-
-
 def acis_filter(obsidinterval_list):
     """
     This method will filter between the different types of 
-    ACIS observations: ACIS-I, ACIS-S, and "hot" ACIS-S.
+    ACIS observations: ACIS-I, ACIS-S, "hot" ACIS-S, and 
+    cold science-orbit ECS. 
     """
     acis_hot = []
     acis_s = []
     acis_i = []
+    cold_ecs = []
 
     for eachobs in obsidinterval_list:
         hetg = eachobs["grating"] == "HETG"
@@ -259,8 +247,10 @@ def acis_filter(obsidinterval_list):
                 acis_s.append(eachobs)
             elif eachobs["instrument"] == "ACIS-I":
                 acis_i.append(eachobs)
+            elif eachobs["instrument"] == "HRC-S" and eachobs["obsid"] >= 60000:
+                cold_ecs.append(eachobs)
             else:
                 raise RuntimeError(f"Cannot determine what kind of thermal "
                                    f"limit {eachobs['obsid']} should have!")
-    return acis_i, acis_s, acis_hot
+    return acis_i, acis_s, acis_hot, cold_ecs
 
