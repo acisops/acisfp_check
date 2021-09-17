@@ -76,16 +76,16 @@ def fetch_ocat_data(obsid_list):
     ccd_count -= tab["DROPPED_CHIP_CNT"].data.astype('int')
     # Now we have to find all of the obsids in each sequence and then
     # compute the complete exposure for each sequence
-    seq_nums = list(tab["SEQ_NUM"].data.astype("int"))
+    seq_nums = list(tab["SEQ_NUM"].data.astype("str"))
+    seq_num_list = ",".join([seq_num for seq_num in seq_nums if seq_num != " "])
     obsids = tab["OBSID"].data.astype("int")
     cnt_rate = tab["EST_CNT_RATE"].data.astype("float64")
-    seq_num_list = ",".join([str(seq_num) for seq_num in seq_nums])
     params = {"seqNum": seq_num_list}
     resp = requests.get(urlbase, params=params)
     tab_seq = ascii.read(resp.text, header_start=0, data_start=2)
     app_exp = np.zeros_like(cnt_rate)
     for row in tab_seq:
-        i = seq_nums.index(int(row["SEQ_NUM"]))
+        i = seq_nums.index(str(row["SEQ_NUM"]))
         app_exp[i] += np.float64(row["APP_EXP"])
     app_exp *= 1000.0
     return {"obsid": np.array(obsids),
