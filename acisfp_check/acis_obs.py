@@ -56,6 +56,9 @@ def fetch_ocat_data(obsid_list):
     """
     import requests
     from astropy.io import ascii
+    # The following uses a request call to the obscat which explicitly
+    # asks for text formatting so that the output can be ingested into
+    # an AstroPy table.
     urlbase = "https://cda.harvard.edu/srservices/ocatDetails.do?format=text"
     obsid_list = ",".join([str(obsid) for obsid in obsid_list])
     params = {"obsid": obsid_list}
