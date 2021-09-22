@@ -1,5 +1,6 @@
 import numpy as np
 from cxotime import CxoTime
+from acis_thermal_check.utils import mylog
 
 
 def who_in_fp(simpos=80655):
@@ -63,39 +64,57 @@ def fetch_ocat_data(obsid_list):
     obsid_list = ",".join([str(obsid) for obsid in obsid_list])
     params = {"obsid": obsid_list}
     # First fetch the information from the obsid itself
-    resp = requests.get(urlbase, params=params)
-    tab = ascii.read(resp.text, header_start=0, data_start=2)
-    tab["TSTART"] = CxoTime(tab["START_DATE"].data).secs
-    tab.sort("TSTART")
-    # We figure out the CCD count from the table by finding out
-    # which ccds were on or optional, and then subtracting off
-    # the dropped chip count
-    ccd_count = np.zeros(tab["S3"].size, dtype='int')
-    for a, r in zip(["I", "S"], [range(4), range(6)]):
-        for i in r:
-            ccd = np.ma.filled(tab[f"{a}{i}"].data)
-            ccd_count += (ccd == "Y").astype('int')
-            ccd_count += np.char.startswith(ccd, "O").astype('int')
-    ccd_count -= tab["DROPPED_CHIP_CNT"].data.astype('int')
-    # Now we have to find all of the obsids in each sequence and then
-    # compute the complete exposure for each sequence
-    seq_nums = list(tab["SEQ_NUM"].data.astype("str"))
-    seq_num_list = ",".join([seq_num for seq_num in seq_nums if seq_num != " "])
-    obsids = tab["OBSID"].data.astype("int")
-    cnt_rate = tab["EST_CNT_RATE"].data.astype("float64")
-    params = {"seqNum": seq_num_list}
-    resp = requests.get(urlbase, params=params)
-    tab_seq = ascii.read(resp.text, header_start=0, data_start=2)
-    app_exp = np.zeros_like(cnt_rate)
-    for row in tab_seq:
-        i = seq_nums.index(str(row["SEQ_NUM"]))
-        app_exp[i] += np.float64(row["APP_EXP"])
-    app_exp *= 1000.0
-    return {"obsid": np.array(obsids),
-            "grating": tab["GRAT"].data,
-            "ccd_count": ccd_count,
-            "S3": np.ma.filled(tab["S3"].data),
-            "num_counts": cnt_rate*app_exp}
+    got_table = True
+    try:
+        resp = requests.get(urlbase, params=params)
+    except requests.ConnectionError:
+        got_table = False
+    else:
+        if not resp.ok:
+            got_table = False
+    if got_table:
+        tab = ascii.read(resp.text, header_start=0, data_start=2)
+        tab["TSTART"] = CxoTime(tab["START_DATE"].data).secs
+        tab.sort("TSTART")
+        # We figure out the CCD count from the table by finding out
+        # which ccds were on or optional, and then subtracting off
+        # the dropped chip count
+        ccd_count = np.zeros(tab["S3"].size, dtype='int')
+        for a, r in zip(["I", "S"], [range(4), range(6)]):
+            for i in r:
+                ccd = np.ma.filled(tab[f"{a}{i}"].data)
+                ccd_count += (ccd == "Y").astype('int')
+                ccd_count += np.char.startswith(ccd, "O").astype('int')
+        ccd_count -= tab["DROPPED_CHIP_CNT"].data.astype('int')
+        # Now we have to find all of the obsids in each sequence and then
+        # compute the complete exposure for each sequence
+        seq_nums = list(tab["SEQ_NUM"].data.astype("str"))
+        seq_num_list = ",".join([seq_num for seq_num in seq_nums if seq_num != " "])
+        obsids = tab["OBSID"].data.astype("int")
+        cnt_rate = tab["EST_CNT_RATE"].data.astype("float64")
+        params = {"seqNum": seq_num_list}
+        resp = requests.get(urlbase, params=params)
+        tab_seq = ascii.read(resp.text, header_start=0, data_start=2)
+        app_exp = np.zeros_like(cnt_rate)
+        for row in tab_seq:
+            i = seq_nums.index(str(row["SEQ_NUM"]))
+            app_exp[i] += np.float64(row["APP_EXP"])
+        app_exp *= 1000.0
+        table_dict = {"obsid": np.array(obsids),
+                      "grating": tab["GRAT"].data,
+                      "ccd_count": ccd_count,
+                      "S3": np.ma.filled(tab["S3"].data),
+                      "num_counts": cnt_rate*app_exp}
+    else:
+        # We weren't able to get a valid table for some reason, so
+        # we cannot check for -109 data, but we proceed with the
+        # rest of the review regardless
+        mylog.warning("Could not get the table from the Obscat to "
+                      "determine which observations can go to -109 C. "
+                      "Any violations of eligible observations should "
+                      "be hand-checked.")
+        table_dict = None
+    return table_dict
 
 
 def find_obsid_intervals(cmd_states):
@@ -204,12 +223,12 @@ def find_obsid_intervals(cmd_states):
     # Now we add the stuff we get from ocat_data
     obsids = [e["obsid"] for e in obsid_interval_list]
     ocat_data = fetch_ocat_data(obsids)
-    ocat_keys = list(ocat_data.keys())
-    ocat_keys.remove("obsid")
-
-    for i in range(len(obsids)):
-        for key in ocat_keys:
-            obsid_interval_list[i][key] = ocat_data[key][i]
+    if ocat_data is not None:
+        ocat_keys = list(ocat_data.keys())
+        ocat_keys.remove("obsid")
+        for i in range(len(obsids)):
+            for key in ocat_keys:
+                obsid_interval_list[i][key] = ocat_data[key][i]
 
     return obsid_interval_list
 
@@ -241,9 +260,13 @@ def acis_filter(obsidinterval_list):
     cold_ecs = []
 
     for eachobs in obsidinterval_list:
-        hetg = eachobs["grating"] == "HETG"
-        s3_only = eachobs["S3"] == "Y" and eachobs["ccd_count"] == 1
-        if hetg or (eachobs["num_counts"] < 300.0 and s3_only):
+        if "grating" in eachobs:
+            hetg = eachobs["grating"] == "HETG"
+            s3_only = eachobs["S3"] == "Y" and eachobs["ccd_count"] == 1
+            hot_acis = hetg or (eachobs["num_counts"] < 300.0 and s3_only)
+        else:
+            hot_acis = False
+        if hot_acis:
             acis_hot.append(eachobs) 
         else:
             if eachobs["instrument"] == "ACIS-S":
