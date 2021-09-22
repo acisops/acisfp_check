@@ -77,13 +77,14 @@ def fetch_ocat_data(obsid_list):
         tab["TSTART"] = CxoTime(tab["START_DATE"].data).secs
         tab.sort("TSTART")
         # We figure out the CCD count from the table by finding out
-        # which ccds were on or optional, and then subtracting off
-        # the dropped chip count
+        # which ccds were on, optional, or dropped, and then
+        # subtracting off the dropped chip count entry in the table
         ccd_count = np.zeros(tab["S3"].size, dtype='int')
         for a, r in zip(["I", "S"], [range(4), range(6)]):
             for i in r:
                 ccd = np.ma.filled(tab[f"{a}{i}"].data)
                 ccd_count += (ccd == "Y").astype('int')
+                ccd_count += (ccd == "D").astype('int')
                 ccd_count += np.char.startswith(ccd, "O").astype('int')
         ccd_count -= tab["DROPPED_CHIP_CNT"].data.astype('int')
         # Now we have to find all of the obsids in each sequence and then
