@@ -56,7 +56,12 @@ def fetch_ocat_data(obsid_list):
     A dict of NumPy arrays of the above properties.
     """
     import requests
+    from ska_helpers.retry import retry_call
     from astropy.io import ascii
+    warn = "Could not get the table from the Obscat to " \
+           "determine which observations can go to -109 C. " \
+           "Any violations of eligible observations should " \
+           "be hand-checked."
     # The following uses a request call to the obscat which explicitly
     # asks for text formatting so that the output can be ingested into
     # an AstroPy table.
@@ -66,7 +71,8 @@ def fetch_ocat_data(obsid_list):
     # First fetch the information from the obsid itself
     got_table = True
     try:
-        resp = requests.get(urlbase, params=params)
+        resp = retry_call(requests.get, [urlbase], {"params": params}, 
+                          tries=4, delay=1)
     except requests.ConnectionError:
         got_table = False
     else:
@@ -94,7 +100,21 @@ def fetch_ocat_data(obsid_list):
         obsids = tab["OBSID"].data.astype("int")
         cnt_rate = tab["EST_CNT_RATE"].data.astype("float64")
         params = {"seqNum": seq_num_list}
-        resp = requests.get(urlbase, params=params)
+        got_seq_table = True
+        try:
+            resp = retry_call(requests.get, [urlbase], {"params": params},
+                              tries=4, delay=1)
+        except requests.ConnectionError:
+            got_seq_table = False
+        else:
+            if not resp.ok:
+                got_seq_table = False
+        if not got_seq_table:
+            # We weren't able to get a valid sequence table for some
+            # reason, so we cannot check for -109 data, but we proceed
+            # with the rest of the review regardless
+            mylog.warning(warn)
+            return None
         tab_seq = ascii.read(resp.text, header_start=0, data_start=2)
         app_exp = np.zeros_like(cnt_rate)
         for row in tab_seq:
@@ -110,10 +130,7 @@ def fetch_ocat_data(obsid_list):
         # We weren't able to get a valid table for some reason, so
         # we cannot check for -109 data, but we proceed with the
         # rest of the review regardless
-        mylog.warning("Could not get the table from the Obscat to "
-                      "determine which observations can go to -109 C. "
-                      "Any violations of eligible observations should "
-                      "be hand-checked.")
+        mylog.warning(warn)
         table_dict = None
     return table_dict
 
