@@ -36,8 +36,7 @@ from astropy.table import Table
 # and attribute support routines.
 #
 from .acis_obs import find_obsid_intervals, \
-    hrc_science_obs_filter, ecs_only_filter, \
-    get_all_specific_instrument
+    hrc_science_obs_filter, acis_filter
 
 model_path = os.path.abspath(os.path.dirname(__file__))
 
@@ -311,11 +310,8 @@ class ACISFPCheck(ACISThermalCheck):
         #   Create subsets of all the observations
         # ------------------------------------------------------
         # Now divide out observations by ACIS-S and ACIS-I
-        ACIS_I_obs = get_all_specific_instrument(self.acis_and_ecs_obs,
-                                                 "ACIS-I")
-        ACIS_S_obs = get_all_specific_instrument(self.acis_and_ecs_obs,
-                                                 "ACIS-S")
-        sci_ecs_obs = ecs_only_filter(self.acis_and_ecs_obs)
+        ACIS_I_obs, ACIS_S_obs, ACIS_hot_obs, sci_ecs_obs = \
+            acis_filter(self.acis_and_ecs_obs)
 
         temp = temps[self.name]
 
@@ -328,7 +324,7 @@ class ACISFPCheck(ACISThermalCheck):
 
         # Create the violation data structure.
         acis_i_viols = self.search_obsids_for_viols("ACIS-I",
-                                                    self.acis_i_limit, ACIS_I_obs, temp, times, load_start)
+            self.acis_i_limit, ACIS_I_obs, temp, times, load_start)
 
         viols["ACIS_I"] = {"name": f"ACIS-I ({self.acis_i_limit} C)",
                            "type": "Max",
@@ -346,6 +342,19 @@ class ACISFPCheck(ACISThermalCheck):
         viols["ACIS_S"] = {"name": f"ACIS-S ({self.acis_s_limit} C)",
                            "type": "Max",
                            "values": acis_s_viols}
+
+        # ------------------------------------------------------------
+        # ACIS-S Hot - Collect any -109 C violations of any non-ECS ACIS-S
+        # science run which can run hot. These are load killers
+        # ------------------------------------------------------------
+        #
+        mylog.info(f'\n\nACIS-S Science ({self.acis_hot_limit} C) violations')
+
+        acis_hot_viols = self.search_obsids_for_viols("Hot ACIS-S",
+            self.acis_hot_limit, ACIS_hot_obs, temp, times, load_start)
+        viols["ACIS_S_hot"] = {"name": f"ACIS-S Hot ({self.acis_hot_limit} C)",
+                               "type": "Max",
+                               "values": acis_hot_viols}
 
         # ------------------------------------------------------------
         # Science Orbit ECS -119.5 violations; -119.5 violation check

@@ -1,8 +1,8 @@
-# ----------------------------------------------------------------
-#
-# who_in_fp
-#
-# ----------------------------------------------------------------
+import numpy as np
+from cxotime import CxoTime
+from acis_thermal_check.utils import mylog
+
+
 def who_in_fp(simpos=80655):
     """
     Returns a string telling you which instrument is in
@@ -40,11 +40,100 @@ def who_in_fp(simpos=80655):
     return is_in_the_fp
 
 
-# ---------------------------------------------------------------------
-#
-# find_obsid_intervals
-#
-# ---------------------------------------------------------------------
+def fetch_ocat_data(obsid_list):
+    """
+    Take a list of obsids and return the following data from
+    the obscat for each: grating status, CCD count, if S3 is on,
+    and the number of expected counts
+
+    Parameters
+    ----------
+    obsid_list : list of ints
+        The obsids to get the obscat data from.
+
+    Returns
+    -------
+    A dict of NumPy arrays of the above properties.
+    """
+    import requests
+    from ska_helpers.retry import retry_call
+    from astropy.io import ascii
+    warn = "Could not get the table from the Obscat to " \
+           "determine which observations can go to -109 C. " \
+           "Any violations of eligible observations should " \
+           "be hand-checked."
+    # The following uses a request call to the obscat which explicitly
+    # asks for text formatting so that the output can be ingested into
+    # an AstroPy table.
+    urlbase = "https://cda.harvard.edu/srservices/ocatDetails.do?format=text"
+    obsid_list = ",".join([str(obsid) for obsid in obsid_list])
+    params = {"obsid": obsid_list}
+    # First fetch the information from the obsid itself
+    got_table = True
+    try:
+        resp = retry_call(requests.get, [urlbase], {"params": params}, 
+                          tries=4, delay=1)
+    except requests.ConnectionError:
+        got_table = False
+    else:
+        if not resp.ok:
+            got_table = False
+    if got_table:
+        tab = ascii.read(resp.text, header_start=0, data_start=2)
+        tab["TSTART"] = CxoTime(tab["START_DATE"].data).secs
+        tab.sort("TSTART")
+        # We figure out the CCD count from the table by finding out
+        # which ccds were on, optional, or dropped, and then
+        # subtracting off the dropped chip count entry in the table
+        ccd_count = np.zeros(tab["S3"].size, dtype='int')
+        for a, r in zip(["I", "S"], [range(4), range(6)]):
+            for i in r:
+                ccd = np.ma.filled(tab[f"{a}{i}"].data)
+                ccd_count += (ccd == "Y").astype('int')
+                ccd_count += (ccd == "D").astype('int')
+                ccd_count += np.char.startswith(ccd, "O").astype('int')
+        ccd_count -= tab["DROPPED_CHIP_CNT"].data.astype('int')
+        # Now we have to find all of the obsids in each sequence and then
+        # compute the complete exposure for each sequence
+        seq_nums = list(tab["SEQ_NUM"].data.astype("str"))
+        seq_num_list = ",".join([seq_num for seq_num in seq_nums if seq_num != " "])
+        obsids = tab["OBSID"].data.astype("int")
+        cnt_rate = tab["EST_CNT_RATE"].data.astype("float64")
+        params = {"seqNum": seq_num_list}
+        got_seq_table = True
+        try:
+            resp = retry_call(requests.get, [urlbase], {"params": params},
+                              tries=4, delay=1)
+        except requests.ConnectionError:
+            got_seq_table = False
+        else:
+            if not resp.ok:
+                got_seq_table = False
+        if not got_seq_table:
+            # We weren't able to get a valid sequence table for some
+            # reason, so we cannot check for -109 data, but we proceed
+            # with the rest of the review regardless
+            mylog.warning(warn)
+            return None
+        tab_seq = ascii.read(resp.text, header_start=0, data_start=2)
+        app_exp = np.zeros_like(cnt_rate)
+        for row in tab_seq:
+            i = seq_nums.index(str(row["SEQ_NUM"]))
+            app_exp[i] += np.float64(row["APP_EXP"])
+        app_exp *= 1000.0
+        table_dict = {"obsid": np.array(obsids),
+                      "grating": tab["GRAT"].data,
+                      "ccd_count": ccd_count,
+                      "S3": np.ma.filled(tab["S3"].data),
+                      "num_counts": cnt_rate*app_exp}
+    else:
+        # We weren't able to get a valid table for some reason, so
+        # we cannot check for -109 data, but we proceed with the
+        # rest of the review regardless
+        mylog.warning(warn)
+        table_dict = None
+    return table_dict
+
 
 def find_obsid_intervals(cmd_states):
     """
@@ -101,7 +190,7 @@ def find_obsid_intervals(cmd_states):
     for eachstate in cmd_states:
 
         # Make sure we skip maneuver obsids explicitly
-        if 50000 > eachstate['obsid'] >= 38001:
+        if 60000 > eachstate['obsid'] >= 38001:
             continue
 
         pow_cmd = eachstate['power_cmd']
@@ -147,14 +236,20 @@ def find_obsid_intervals(cmd_states):
 
     # End of LOOP for eachstate in cmd_states:
 
+    # sort based on obsid
+    obsid_interval_list.sort(key=lambda x: x["tstart"])
+    # Now we add the stuff we get from ocat_data
+    obsids = [e["obsid"] for e in obsid_interval_list]
+    ocat_data = fetch_ocat_data(obsids)
+    if ocat_data is not None:
+        ocat_keys = list(ocat_data.keys())
+        ocat_keys.remove("obsid")
+        for i in range(len(obsids)):
+            for key in ocat_keys:
+                obsid_interval_list[i][key] = ocat_data[key][i]
+
     return obsid_interval_list
 
-
-# --------------------------------------------------------------------------
-#
-#   hrc_science_obs_filter - filter *OUT* any HRC science observations
-#
-# --------------------------------------------------------------------------
 
 def hrc_science_obs_filter(obsidinterval_list):
     """
@@ -166,44 +261,40 @@ def hrc_science_obs_filter(obsidinterval_list):
     acis_and_ecs_only = []
     for eachobservation in obsidinterval_list:
         if eachobservation["instrument"].startswith("ACIS-") or \
-                eachobservation["obsid"] >= 50000:
+                eachobservation["obsid"] >= 60000:
             acis_and_ecs_only.append(eachobservation)
     return acis_and_ecs_only
 
 
-# --------------------------------------------------------------------------
-#
-#   ecs_only_filter
-#
-# --------------------------------------------------------------------------
-
-def ecs_only_filter(obsidinterval_list):
+def acis_filter(obsidinterval_list):
     """
-    This method will filter out any science observation from the
-    input obsid interval list. It keeps any observation that has an
-    obsid of 50,000 or greater
+    This method will filter between the different types of 
+    ACIS observations: ACIS-I, ACIS-S, "hot" ACIS-S, and 
+    cold science-orbit ECS. 
     """
-    ecs_only = []
-    for eachobservation in obsidinterval_list:
-        if eachobservation["obsid"] >= 60000 and \
-                eachobservation["instrument"] == "HRC-S":
-            ecs_only.append(eachobservation)
-    return ecs_only
+    acis_hot = []
+    acis_s = []
+    acis_i = []
+    cold_ecs = []
 
+    for eachobs in obsidinterval_list:
+        if "grating" in eachobs:
+            hetg = eachobs["grating"] == "HETG"
+            s3_only = eachobs["S3"] == "Y" and eachobs["ccd_count"] == 1
+            hot_acis = hetg or (eachobs["num_counts"] < 300.0 and s3_only)
+        else:
+            hot_acis = False
+        if hot_acis:
+            acis_hot.append(eachobs) 
+        else:
+            if eachobs["instrument"] == "ACIS-S":
+                acis_s.append(eachobs)
+            elif eachobs["instrument"] == "ACIS-I":
+                acis_i.append(eachobs)
+            elif eachobs["instrument"] == "HRC-S" and eachobs["obsid"] >= 60000:
+                cold_ecs.append(eachobs)
+            else:
+                raise RuntimeError(f"Cannot determine what kind of thermal "
+                                   f"limit {eachobs['obsid']} should have!")
+    return acis_i, acis_s, acis_hot, cold_ecs
 
-# ----------------------------------------------------------------------
-#
-#  get_all_specific_instrument
-#
-# ---------------------------------------------------------------------
-
-def get_all_specific_instrument(observations, instrument):
-    """
-    Given a list  of obsid intervals extracted by this class
-    class, return the list all those obsids with the specified instrument
-    """
-    same_inst = []
-    for eachobs in observations:
-        if eachobs["instrument"] == instrument:
-            same_inst.append(eachobs)
-    return same_inst
