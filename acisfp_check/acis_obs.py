@@ -80,8 +80,7 @@ def fetch_ocat_data(obsid_list):
             got_table = False
     if got_table:
         tab = ascii.read(resp.text, header_start=0, data_start=2)
-        tab["TSTART"] = CxoTime(tab["START_DATE"].data).secs
-        tab.sort("TSTART")
+        tab.sort("OBSID")
         # We figure out the CCD count from the table by finding out
         # which ccds were on, optional, or dropped, and then
         # subtracting off the dropped chip count entry in the table
@@ -237,17 +236,22 @@ def find_obsid_intervals(cmd_states):
     # End of LOOP for eachstate in cmd_states:
 
     # sort based on obsid
-    obsid_interval_list.sort(key=lambda x: x["tstart"])
+    obsid_interval_list.sort(key=lambda x: x["obsid"])
     # Now we add the stuff we get from ocat_data
     obsids = [e["obsid"] for e in obsid_interval_list]
     ocat_data = fetch_ocat_data(obsids)
     if ocat_data is not None:
         ocat_keys = list(ocat_data.keys())
         ocat_keys.remove("obsid")
-        for i in range(len(obsids)):
+        for i, obsid in enumerate(obsids):
+            # The obscat doesn't have info for cold ECS observations
+            if obsid > 60000:
+                continue
             for key in ocat_keys:
                 obsid_interval_list[i][key] = ocat_data[key][i]
 
+    # re-sort based on tstart
+    obsid_interval_list.sort(key=lambda x: x["tstart"])
     return obsid_interval_list
 
 
