@@ -251,7 +251,7 @@ def find_obsid_intervals(cmd_states):
     return obsid_interval_list
 
 
-def hrc_science_obs_filter(obsidinterval_list):
+def hrc_science_obs_filter(obsid_interval_list):
     """
     This method will filter *OUT* any HRC science observations from the
     input obsid interval list. Filtered are obs that have either
@@ -259,14 +259,14 @@ def hrc_science_obs_filter(obsidinterval_list):
     50,000
     """
     acis_and_ecs_only = []
-    for eachobservation in obsidinterval_list:
+    for eachobservation in obsid_interval_list:
         if eachobservation["instrument"].startswith("ACIS-") or \
                 eachobservation["obsid"] >= 60000:
             acis_and_ecs_only.append(eachobservation)
     return acis_and_ecs_only
 
 
-def acis_filter(obsidinterval_list):
+def acis_filter(obsid_interval_list):
     """
     This method will filter between the different types of 
     ACIS observations: ACIS-I, ACIS-S, "hot" ACIS-S, and 
@@ -277,7 +277,7 @@ def acis_filter(obsidinterval_list):
     acis_i = []
     cold_ecs = []
 
-    for eachobs in obsidinterval_list:
+    for eachobs in obsid_interval_list:
         if "grating" in eachobs:
             hetg = eachobs["grating"] == "HETG"
             s3_only = eachobs["S3"] == "Y" and eachobs["ccd_count"] == 1
